@@ -11,149 +11,154 @@ define(['THREE', 'TWEEN', 'cnc/util', 'libs/threejs/OrbitControls', 'cnc/ui/cube
             });
         }
 
-        var worker = new Worker(require.toUrl('worker.js') + '#3DView');
+        function worker_function() {
+            var worker = new Worker(require.toUrl('worker.js') + '#3DView');
 
-        var resultMap = {};
+            var resultMap = {};
 
-        worker.onmessage = function (event) {
-            var callback = resultMap[event.data.id];
-            if (callback) {
-                delete resultMap[event.data.id];
-                callback(event.data);
-            }
-        };
-
-        function webglSupported() {
-            try {
-                var canvas = document.createElement('canvas');
-                return !!window.WebGLRenderingContext && ( canvas.getContext('webgl') || canvas.getContext('experimental-webgl') );
-            } catch (e) {
-                return false;
-            }
-        }
-
-        function tweenVector(v) {
-            return new util.Point(v.x, v.y, v.z);
-        }
-
-        function OutlineNode(node, lineMaterial, meshMaterial, view) {
-            this.node = node;
-            this.lineMaterial = lineMaterial;
-            this.meshMaterial = meshMaterial;
-            this.bufferedGeometry = null;
-            this.view = view;
-        }
-
-        OutlineNode.prototype = {
-            setVisibility: function (visible) {
-                this.node.traverse(function (node) {
-                    node.visible = visible;
-                });
-                this.view.reRender();
-            },
-            createChild: function () {
-                var node = new THREE.Object3D();
-                this.node.add(node);
-                return new OutlineNode(node, this.lineMaterial, this.meshMaterial, this.view);
-            },
-            remove: function () {
-                var node = this.node;
-                for (var i = 0; i < node.children.length; i++) {
-                    var geometry = node.children[i].geometry;
-                    if (geometry)
-                        geometry.dispose();
+            worker.onmessage = function (event) {
+                var callback = resultMap[event.data.id];
+                if (callback) {
+                    delete resultMap[event.data.id];
+                    callback(event.data);
                 }
-                node.parent.remove(node);
-            },
-            clear: function () {
+            };
+
+            function webglSupported() {
+                try {
+                    var canvas = document.createElement('canvas');
+                    return !!window.WebGLRenderingContext && ( canvas.getContext('webgl') || canvas.getContext('experimental-webgl') );
+                } catch (e) {
+                    return false;
+                }
+            }
+
+            function tweenVector(v) {
+                return new util.Point(v.x, v.y, v.z);
+            }
+
+            function OutlineNode(node, lineMaterial, meshMaterial, view) {
+                this.node = node;
+                this.lineMaterial = lineMaterial;
+                this.meshMaterial = meshMaterial;
                 this.bufferedGeometry = null;
-                var node = this.node;
-                while (node.children.length) {
-                    var child = node.children[0];
-                    child.geometry.dispose();
-                    node.remove(child);
-                }
-            },
-            addMesh: function (meshGeometry) {
-                this.node.add(new THREE.Mesh(meshGeometry, this.meshMaterial));
-            },
-            addPolyLines: function (polylines) {
-                if (!polylines.length)
-                    return;
-                var id = generateUUID();
-                var _this = this;
-                resultMap[id] = function (data) {
-                    for (var i = 0; i < data.result.length; i++) {
-                        var buffer = data.result[i].position;
-                        var indexBuffer = data.result[i].index;
-                        var bufferedGeometry = new THREE.BufferGeometry();
-                        bufferedGeometry.addAttribute('position', new THREE.BufferAttribute(buffer, 3));
-                        bufferedGeometry.setIndex(new THREE.BufferAttribute(indexBuffer, 1));
-                        bufferedGeometry.clearGroups();
-                        bufferedGeometry.addGroup(0, data.result[i].count * 2);
-                        _this.node.add(new THREE.LineSegments(bufferedGeometry, new THREE.MultiMaterial([_this.lineMaterial])));
-                    }
-                    _this.view.reRender();
-                };
-                worker.postMessage({id: id, operation: 'uiPreparePolylines', polylines: polylines});
-            },
-            displayMeshData: function (result) {
-                for (var i = 0; i < result.length; i++) {
-                    var bufferedGeometry = new THREE.BufferGeometry();
-                    bufferedGeometry.addAttribute('position', new THREE.BufferAttribute(result[i].positions, 3));
-                    bufferedGeometry.setIndex(new THREE.BufferAttribute(result[i].indices, 1));
-                    this.addMesh(bufferedGeometry);
-                }
-                this.view.reRender();
-            },
-            addCollated: function (rawVertices) {
-                var maxPoints = 20000;
-
-                var vertices = rawVertices instanceof Float32Array ? rawVertices : new Float32Array(rawVertices);
-                var pointsAdded = vertices.length / 3;
-
-                var startIndex = 0;
-                var buffer;
-                var indexBuffer;
-                if (this.bufferedGeometry == null) {
-                    buffer = new Float32Array(maxPoints * 3);
-                    indexBuffer = new Uint16Array(maxPoints * 2);
-                    this.bufferedGeometry = new THREE.BufferGeometry();
-                    var posAtt = new THREE.BufferAttribute(buffer, 3);
-                    posAtt.dynamic = true;
-                    this.bufferedGeometry.addAttribute('position', posAtt);
-                    var indexAtt = new THREE.BufferAttribute(indexBuffer, 1);
-                    indexAtt.dynamic = true;
-                    this.bufferedGeometry.setIndex(indexAtt);
-                    this.bufferedGeometry.dynamic = true;
-                    this.node.add(new THREE.LineSegments(this.bufferedGeometry, new THREE.MultiMaterial([this.lineMaterial])));
-                } else {
-                    var lastGroup = this.bufferedGeometry.groups[this.bufferedGeometry.groups.length - 1];
-                    startIndex = lastGroup.start / 2 + lastGroup.count / 2 + 1;
-                    buffer = this.bufferedGeometry.attributes.position.array;
-                    indexBuffer = this.bufferedGeometry.index.array;
-                }
-
-                var choppedPointAdded = Math.min(startIndex + pointsAdded, maxPoints) - startIndex;
-                var segmentsAdded = choppedPointAdded - 1;
-                buffer.set(vertices.subarray(0, choppedPointAdded * 3), startIndex * 3);
-
-                for (var i = startIndex; i < startIndex + segmentsAdded; i++) {
-                    indexBuffer[i * 2] = i;
-                    indexBuffer[i * 2 + 1] = i + 1;
-                }
-                this.bufferedGeometry.clearGroups();
-                this.bufferedGeometry.addGroup(0, (startIndex + segmentsAdded ) * 2);
-                this.bufferedGeometry.groupsNeedUpdate = true;
-
-                this.bufferedGeometry.index.needsUpdate = true;
-                this.bufferedGeometry.attributes.position.needsUpdate = true;
-                if (choppedPointAdded < pointsAdded) {
-                    this.bufferedGeometry = null;
-                    return this.addCollated(vertices.subarray((choppedPointAdded - 1) * 3));
-                }
+                this.view = view;
             }
-        };
+
+            OutlineNode.prototype = {
+                setVisibility: function (visible) {
+                    this.node.traverse(function (node) {
+                        node.visible = visible;
+                    });
+                    this.view.reRender();
+                },
+                createChild: function () {
+                    var node = new THREE.Object3D();
+                    this.node.add(node);
+                    return new OutlineNode(node, this.lineMaterial, this.meshMaterial, this.view);
+                },
+                remove: function () {
+                    var node = this.node;
+                    for (var i = 0; i < node.children.length; i++) {
+                        var geometry = node.children[i].geometry;
+                        if (geometry)
+                            geometry.dispose();
+                    }
+                    node.parent.remove(node);
+                },
+                clear: function () {
+                    this.bufferedGeometry = null;
+                    var node = this.node;
+                    while (node.children.length) {
+                        var child = node.children[0];
+                        child.geometry.dispose();
+                        node.remove(child);
+                    }
+                },
+                addMesh: function (meshGeometry) {
+                    this.node.add(new THREE.Mesh(meshGeometry, this.meshMaterial));
+                },
+                addPolyLines: function (polylines) {
+                    if (!polylines.length)
+                        return;
+                    var id = generateUUID();
+                    var _this = this;
+                    resultMap[id] = function (data) {
+                        for (var i = 0; i < data.result.length; i++) {
+                            var buffer = data.result[i].position;
+                            var indexBuffer = data.result[i].index;
+                            var bufferedGeometry = new THREE.BufferGeometry();
+                            bufferedGeometry.addAttribute('position', new THREE.BufferAttribute(buffer, 3));
+                            bufferedGeometry.setIndex(new THREE.BufferAttribute(indexBuffer, 1));
+                            bufferedGeometry.clearGroups();
+                            bufferedGeometry.addGroup(0, data.result[i].count * 2);
+                            _this.node.add(new THREE.LineSegments(bufferedGeometry, new THREE.MultiMaterial([_this.lineMaterial])));
+                        }
+                        _this.view.reRender();
+                    };
+                    worker.postMessage({id: id, operation: 'uiPreparePolylines', polylines: polylines});
+                },
+                displayMeshData: function (result) {
+                    for (var i = 0; i < result.length; i++) {
+                        var bufferedGeometry = new THREE.BufferGeometry();
+                        bufferedGeometry.addAttribute('position', new THREE.BufferAttribute(result[i].positions, 3));
+                        bufferedGeometry.setIndex(new THREE.BufferAttribute(result[i].indices, 1));
+                        this.addMesh(bufferedGeometry);
+                    }
+                    this.view.reRender();
+                },
+                addCollated: function (rawVertices) {
+                    var maxPoints = 20000;
+
+                    var vertices = rawVertices instanceof Float32Array ? rawVertices : new Float32Array(rawVertices);
+                    var pointsAdded = vertices.length / 3;
+
+                    var startIndex = 0;
+                    var buffer;
+                    var indexBuffer;
+                    if (this.bufferedGeometry == null) {
+                        buffer = new Float32Array(maxPoints * 3);
+                        indexBuffer = new Uint16Array(maxPoints * 2);
+                        this.bufferedGeometry = new THREE.BufferGeometry();
+                        var posAtt = new THREE.BufferAttribute(buffer, 3);
+                        posAtt.dynamic = true;
+                        this.bufferedGeometry.addAttribute('position', posAtt);
+                        var indexAtt = new THREE.BufferAttribute(indexBuffer, 1);
+                        indexAtt.dynamic = true;
+                        this.bufferedGeometry.setIndex(indexAtt);
+                        this.bufferedGeometry.dynamic = true;
+                        this.node.add(new THREE.LineSegments(this.bufferedGeometry, new THREE.MultiMaterial([this.lineMaterial])));
+                    } else {
+                        var lastGroup = this.bufferedGeometry.groups[this.bufferedGeometry.groups.length - 1];
+                        startIndex = lastGroup.start / 2 + lastGroup.count / 2 + 1;
+                        buffer = this.bufferedGeometry.attributes.position.array;
+                        indexBuffer = this.bufferedGeometry.index.array;
+                    }
+
+                    var choppedPointAdded = Math.min(startIndex + pointsAdded, maxPoints) - startIndex;
+                    var segmentsAdded = choppedPointAdded - 1;
+                    buffer.set(vertices.subarray(0, choppedPointAdded * 3), startIndex * 3);
+
+                    for (var i = startIndex; i < startIndex + segmentsAdded; i++) {
+                        indexBuffer[i * 2] = i;
+                        indexBuffer[i * 2 + 1] = i + 1;
+                    }
+                    this.bufferedGeometry.clearGroups();
+                    this.bufferedGeometry.addGroup(0, (startIndex + segmentsAdded ) * 2);
+                    this.bufferedGeometry.groupsNeedUpdate = true;
+
+                    this.bufferedGeometry.index.needsUpdate = true;
+                    this.bufferedGeometry.attributes.position.needsUpdate = true;
+                    if (choppedPointAdded < pointsAdded) {
+                        this.bufferedGeometry = null;
+                        return this.addCollated(vertices.subarray((choppedPointAdded - 1) * 3));
+                    }
+                }
+            };
+        }
+
+        if (window!=self)
+            worker_function();
 
         function ThreeDView($container) {
             var _this = this;
